@@ -2397,6 +2397,18 @@
             }, 200);
         });
 
+        socket.on('qr_2fa_error', (data) => {
+            if (data.session_id !== currentQrSessionId) return;
+            showNotification(data.error, 'error');
+            showQrStep(3);
+            const btn = document.getElementById('qr2faBtn');
+            if (btn) { btn.disabled = false; btn.textContent = 'Confirm'; }
+            setTimeout(() => {
+                const pw = document.getElementById('qr2faPassword');
+                if (pw) { pw.value = ''; pw.focus(); }
+            }, 100);
+        });
+
         socket.on('qr_login_error', (data) => {
             if (data.session_id !== currentQrSessionId) return;
             stopQrCountdown();
