@@ -1132,23 +1132,6 @@
         </div>
     </div>
 
-    <div id="authModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 id="authTitle">🔐 Authentication Required</h2>
-                <p id="authSubtitle">Enter verification code</p>
-            </div>
-
-            <div class="form-group">
-                <label id="authLabel">Verification Code:</label>
-                <input type="text" class="form-control auth-input-large" id="authInput" placeholder="Enter code" autocomplete="off">
-            </div>
-
-            <div class="modal-buttons">
-                <button class="btn btn-primary" onclick="submitAuth()">Submit</button>
-            </div>
-        </div>
-    </div>
 
     <!-- ============================================
          QR CODE LOGIN MODAL
@@ -1990,118 +1973,6 @@
             document.getElementById('selectAllChannels').checked = false;
         }
 
-        function showAuthModal(phone, step) {
-            currentAuthPhone = phone;
-            currentAuthStep = step;
-            
-            const modal = document.getElementById('authModal');
-            const title = document.getElementById('authTitle');
-            const subtitle = document.getElementById('authSubtitle');
-            const label = document.getElementById('authLabel');
-            const input = document.getElementById('authInput');
-            
-            if (step === 'code') {
-                title.textContent = '📱 Verification Code';
-                subtitle.textContent = `Enter the code sent to ${phone}`;
-                label.textContent = 'Verification Code:';
-                input.placeholder = 'Enter 5-digit code';
-                input.type = 'text';
-                input.maxLength = 5;
-                input.pattern = '[0-9]{5}';
-            } else if (step === 'password') {
-                title.textContent = '🔐 2FA Password';
-                subtitle.textContent = `Enter 2FA password for ${phone}`;
-                label.textContent = '2FA Password:';
-                input.placeholder = 'Enter password';
-                input.type = 'password';
-                input.maxLength = 100;
-                input.removeAttribute('pattern');
-            }
-            
-            input.value = '';
-            modal.classList.add('show');
-            
-            setTimeout(() => {
-                input.focus();
-                input.select();
-            }, 300);
-        }
-
-        function closeAuthModal() {
-            const modal = document.getElementById('authModal');
-            modal.classList.remove('show');
-        }
-
-        async function submitAuth() {
-            const input = document.getElementById('authInput');
-            const value = input.value.trim();
-            
-            if (!value) {
-                showNotification('Enter the required value!', 'error');
-                input.focus();
-                return;
-            }
-            
-            if (currentAuthStep === 'code') {
-                if (!/^\d{5}$/.test(value)) {
-                    showNotification('Code must be exactly 5 digits!', 'error');
-                    input.focus();
-                    input.select();
-                    return;
-                }
-            }
-            
-            if (currentAuthStep === 'password') {
-                if (value.length < 1) {
-                    showNotification('Password cannot be empty!', 'error');
-                    input.focus();
-                    return;
-                }
-            }
-            
-            input.disabled = true;
-            const submitBtn = document.querySelector('#authModal .btn-primary');
-            const originalText = submitBtn.textContent;
-            submitBtn.textContent = 'Submitting...';
-            submitBtn.disabled = true;
-            
-            try {
-                const endpoint = currentAuthStep === 'code' ? '/api/auth/code' : '/api/auth/password';
-                const field = currentAuthStep === 'code' ? 'code' : 'password';
-                
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        phone: currentAuthPhone,
-                        [field]: value
-                    })
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    showNotification(result.message, 'success');
-                } else {
-                    showNotification(result.error, 'error');
-                    input.disabled = false;
-                    input.focus();
-                    input.select();
-                }
-            } catch (error) {
-                showNotification('Error submitting authentication: ' + error.message, 'error');
-                input.disabled = false;
-                input.focus();
-                input.select();
-            } finally {
-                submitBtn.textContent = originalText;
-                submitBtn.disabled = false;
-                input.disabled = false;
-            }
-        }
-
         async function loadAccounts() {
             try {
                 const response = await fetch('/api/accounts');
@@ -2159,6 +2030,8 @@
                     <td>${targetChannelsDisplay} (${account.target_channels.length})</td>
                     <td><span class="status-badge ${statusClass}">${account.status}</span></td>
                     <td>
+                        ${account.status === 'Auth Expired' ? 
+                            `<button class="btn btn-qr" onclick="startQrReauth('${account.phone}')" style="margin-right:5px; padding: 5px 10px; font-size: 12px;">📷 Reconnect QR</button>` : ''}
                         <button class="btn btn-primary" onclick="showManageAccountModal('${account.phone}')" style="background-color: #607D8B;">⚙️ Manage</button>
                         <button class="btn btn-danger" onclick="removeAccount('${account.phone}')">Remove</button>
                     </td>
@@ -2293,19 +2166,6 @@
             }
         });
 
-        socket.on('auth_required', (data) => {
-            showAuthModal(data.phone, data.step);
-        });
-
-        socket.on('auth_success', (data) => {
-            closeAuthModal();
-            showNotification(`Authentication successful for ${data.phone}`, 'success');
-        });
-
-        socket.on('auth_error', (data) => {
-            closeAuthModal();
-            showNotification(`Authentication error for ${data.phone}: ${data.error}`, 'error');
-        });
 
         socket.on('log_message', (data) => {
             const logContainer = document.getElementById('systemLog');
@@ -2594,6 +2454,32 @@
                 tag.className = 'channel-tag';
                 tag.innerHTML = `${channel} <span class="remove" onclick="removeQrTargetChannel('${channel}')">&times;</span>`;
                 container.appendChild(tag);
+            });
+        }
+
+        function startQrReauth(phone) {
+            showQrLoginModal();
+            // Start the QR code login for this phone
+            fetch('/api/qr/start', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    phone: phone
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success === false) {
+                    showNotification('Error starting QR Reauth: ' + data.error, 'error');
+                } else {
+                    // Switch to step 2 immediately
+                    showQrStep(2);
+                }
+            })
+            .catch(err => {
+                showNotification('Network error starting QR login', 'error');
             });
         }
 
