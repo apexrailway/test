@@ -1,0 +1,1141 @@
+--- current_app.py
++++ original_app.py
+@@ -1,16 +1,9 @@
+-from collections import deque
+-import sys
+ import asyncio
+ import json
+ import os
+ import threading
+ import time
+ import random
+-import uuid
+-import qrcode
+-import io
+-import base64
+-import copy
+ from datetime import datetime, timedelta, timezone
+ import logging
+ from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+@@ -23,19 +16,6 @@
+ import hashlib
+ from models import DatabaseManager, Account, ScheduledPost
+ from sqlalchemy.exc import IntegrityError
+-from sqlalchemy.orm.attributes import flag_modified
+-
+-# Reconfigure stdout/stderr for Windows UTF-8 console output
+-if hasattr(sys.stdout, 'reconfigure'):
+-    try:
+-        sys.stdout.reconfigure(encoding='utf-8', errors='backslashreplace')
+-    except Exception:
+-        pass
+-if hasattr(sys.stderr, 'reconfigure'):
+-    try:
+-        sys.stderr.reconfigure(encoding='utf-8', errors='backslashreplace')
+-    except Exception:
+-        pass
+ 
+ app = Flask(__name__)
+ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-here-change-this-in-production')
+@@ -56,44 +36,52 @@
+         self.create_default_password_file()
+     
+     def create_default_password_file(self):
+-        if not os.path.exists(self.password_file):
+-            try:
+-                with open(self.password_file, 'w', encoding='utf-8') as f:
+-                    f.write("Login:test\nPassword:123\n")
+-                print(f"✅ Created default password file at: {os.path.abspath(self.password_file)}")
+-            except Exception as e:
+-                print(f"Error creating default password file: {e}")
++        pass
+     
+     def load_credentials(self):
+         try:
+             abs_path = os.path.abspath(self.password_file)
+-            if not os.path.exists(self.password_file):
+-                self.create_default_password_file()
+-
++            print(f"Checking password file: {abs_path}")
++            print(f"File exists: {os.path.exists(self.password_file)}")
++            
+             if os.path.exists(self.password_file):
+                 with open(self.password_file, 'r', encoding='utf-8') as f:
+                     content = f.read()
+                 
++                print(f"Raw file content: {repr(content)}")
+                 content = content.strip()
++                print(f"Stripped content: {repr(content)}")
++                
+                 login = None
+                 password = None
+                 
+                 lines = content.split('\n')
+-                for line in lines:
+-                    line = line.strip().replace('\r', '')
++                print(f"Lines: {lines}")
++                
++                for i, line in enumerate(lines):
++                    line = line.strip()
++                    print(f"Processing line {i}: {repr(line)}")
+                     if line.startswith('Login:'):
+                         login = line.replace('Login:', '').strip()
++                        print(f"Found login: {repr(login)}")
+                     elif line.startswith('Password:'):
+                         password = line.replace('Password:', '').strip()
++                        print(f"Found password: {repr(password)}")
++                
++                print(f"Final parsed credentials: login={repr(login)}, password={repr(password)}")
+                 
+                 if login and password:
+                     return {'login': login, 'password': password}
+                 else:
++                    print("ERROR: Missing login or password in file")
+                     return None
+             else:
++                print(f"ERROR: Password file not found at: {abs_path}")
+                 return None
+         except Exception as e:
+             print(f"ERROR loading credentials: {e}")
++            import traceback
++            traceback.print_exc()
+             return None
+     
+     def verify_credentials(self, username, password):
+@@ -155,10 +143,9 @@
+         self.loop_thread = None
+ 
+         self.pending_auth = {}
+-        self.pending_qr_sessions = {}  # {session_id: {client, qr_login, api_id, api_hash, name, source_channel, target_channels, step, task}}
+-
+-        self.log_history = deque(maxlen=500)
+-        self.monitor_history = deque(maxlen=500)
++
++        self.log_history = []
++        self.monitor_history = []
+         self.max_history_size = 500
+ 
+         self.entity_cache = {}
+@@ -248,13 +235,7 @@
+         except Exception as e:
+             pass
+         
+-        try:
+-            print(full_message)
+-        except Exception:
+-            try:
+-                print(full_message.encode('ascii', errors='replace').decode('ascii'))
+-            except Exception:
+-                pass
++        print(full_message)
+     
+     def monitor_message(self, message, account_phone=None, channel=None):
+         utc_plus_2 = timezone(timedelta(hours=2))
+@@ -273,13 +254,7 @@
+         except:
+             pass
+         
+-        try:
+-            print(full_message)
+-        except Exception:
+-            try:
+-                print(full_message.encode('ascii', errors='replace').decode('ascii'))
+-            except Exception:
+-                pass
++        print(full_message)
+     
+     def get_log_history(self):
+         return '\n'.join(self.log_history) if self.log_history else 'System ready... Logs will appear here.'
+@@ -321,9 +296,6 @@
+             cache_key = f"{phone}_{entity_id}"
+             if cache_key in self.entity_cache:
+                 return self.entity_cache[cache_key]
+-
+-            if len(self.entity_cache) > 300:
+-                self.entity_cache.clear()
+             
+             entity_id = int(entity_id)
+             
+@@ -421,8 +393,6 @@
+                 db.close()
+                 return {"success": False, "error": "Account not found!"}
+ 
+-            account_phone = account.phone
+-
+             # Remove session file
+             session_file = f"{account.session_file}.session"
+             if os.path.exists(session_file):
+@@ -433,7 +403,7 @@
+                     self.log_message(f"Error removing session file: {str(e)}")
+ 
+             # Disconnect client if connected
+-            for phone_variant in [account_phone, account_phone.replace('+', ''), f"+{account_phone}"]:
++            for phone_variant in [account.phone, account.phone.replace('+', ''), f"+{account.phone}"]:
+                 if phone_variant in self.clients:
+                     try:
+                         if self.loop:
+@@ -444,46 +414,14 @@
+                     except Exception as e:
+                         self.log_message(f"Error disconnecting client: {str(e)}")
+ 
+-            # Clean up scheduled posts that reference this account
+-            scheduled_posts = db.query(ScheduledPost).filter(
+-                ScheduledPost.status == 'Pending'
+-            ).all()
+-
+-            cleaned_posts = 0
+-            removed_posts = 0
+-            for post in scheduled_posts:
+-                if account_phone in (post.channels or {}):
+-                    new_channels = {k: v for k, v in post.channels.items() if k != account_phone}
+-                    if not new_channels:
+-                        # No accounts left — remove the scheduled post entirely
+-                        db.delete(post)
+-                        removed_posts += 1
+-                    else:
+-                        post.channels = new_channels
+-                        flag_modified(post, 'channels')
+-                        cleaned_posts += 1
+-
+-            if cleaned_posts > 0:
+-                self.log_message(f"Updated {cleaned_posts} scheduled post(s) — removed account {account_phone}")
+-            if removed_posts > 0:
+-                self.log_message(f"Removed {removed_posts} scheduled post(s) — no accounts remaining")
+-
+-            # Delete account from database
++            # Delete from database
+             db.delete(account)
+             db.commit()
+ 
+             self.entity_cache.clear()
+ 
+-            self.log_message(f"Account removed: {account_phone}")
+-
+-            # Notify frontend about scheduled posts update
+-            try:
+-                socketio.emit('scheduled_posts_updated', self.get_scheduled_posts_data())
+-                socketio.emit('accounts_updated', self.get_accounts_data())
+-            except:
+-                pass
+-
+-            return {"success": True, "message": f"{account_phone} account removed!"}
++            self.log_message(f"Account removed: {account.phone}")
++            return {"success": True, "message": f"{account.phone} account removed!"}
+ 
+         except Exception as e:
+             db.rollback()
+@@ -503,22 +441,18 @@
+             for phone, channels_to_remove in selected_channels.items():
+                 account = db.query(Account).filter_by(phone=phone).first()
+                 if account:
+-                    original_count = len(account.target_channels or [])
+-
+-                    # Create new list to trigger SQLAlchemy change detection
+-                    new_channels = [ch for ch in (account.target_channels or []) if ch not in channels_to_remove]
+-                    account.target_channels = new_channels
+-                    flag_modified(account, 'target_channels')
+-
+-                    removed_from_this_account = original_count - len(new_channels)
++                    original_count = len(account.target_channels)
++
++                    # Remove selected channels
++                    account.target_channels = [ch for ch in account.target_channels if ch not in channels_to_remove]
++
++                    removed_from_this_account = original_count - len(account.target_channels)
+                     removed_count += removed_from_this_account
+ 
+                     self.log_message(f"Removed {removed_from_this_account} channels from {phone}")
+ 
+             db.commit()
+             self.log_message(f"Total channels removed: {removed_count}")
+-
+-            self.entity_cache.clear()
+ 
+             try:
+                 socketio.emit('accounts_updated', self.get_accounts_data())
+@@ -533,266 +467,29 @@
+             return {"success": False, "error": f"Database error: {str(e)}"}
+         finally:
+             db.close()
+-
+-    # =========================================================
+-    # ACCOUNT CHANNEL MANAGEMENT
+-    # =========================================================
+-
+-    def _find_account(self, db, phone):
+-        """Find an account by phone with flexible matching"""
+-        if not phone:
+-            return None
+-        from urllib.parse import unquote
+-        phone_unquoted = unquote(str(phone)).strip()
+-        phone_clean = phone_unquoted.replace('+', '').replace(' ', '')
+-        return db.query(Account).filter(
+-            (Account.phone == phone_unquoted) |
+-            (Account.phone == phone) |
+-            (Account.phone.like(f"%{phone_clean}%"))
+-        ).first()
+-
+-    def get_account_info(self, phone):
+-        """Return full info for a single account"""
+-        db = self.db_manager.get_session()
+-        try:
+-            account = self._find_account(db, phone)
+-            if not account:
+-                return {"success": False, "error": "Account not found!"}
+-            return {
+-                "success": True,
+-                "account": {
+-                    "name": account.name,
+-                    "phone": account.phone,
+-                    "source_channel": account.source_channel,
+-                    "target_channels": account.target_channels or [],
+-                    "status": account.status,
+-                }
+-            }
+-        except Exception as e:
+-            return {"success": False, "error": str(e)}
+-        finally:
+-            db.close()
+-
+-    def add_target_channels(self, phone, new_channels):
+-        """Add new target channels to an existing account"""
+-        if not new_channels:
+-            return {"success": False, "error": "No channels provided!"}
+-
+-        # Validate all channel IDs are numbers
+-        for ch in new_channels:
+-            try:
+-                int(ch)
+-            except ValueError:
+-                return {"success": False, "error": f"Channel '{ch}' must be a number!"}
+-
+-        db = self.db_manager.get_session()
+-        try:
+-            account = self._find_account(db, phone)
+-            if not account:
+-                return {"success": False, "error": "Account not found!"}
+-
+-            existing = list(account.target_channels or [])
+-            added = []
+-            skipped = []
+-
+-            for ch in new_channels:
+-                ch = str(ch).strip()
+-                if ch in existing:
+-                    skipped.append(ch)
+-                else:
+-                    existing.append(ch)
+-                    added.append(ch)
+-
+-            # Assign new list and flag for SQLAlchemy JSON mutation detection
+-            account.target_channels = list(existing)
+-            flag_modified(account, 'target_channels')
+-            db.commit()
+-
+-            self.entity_cache.clear()
+-
+-            self.log_message(
+-                f"Account {phone}: added {len(added)} channels"
+-                + (f", skipped {len(skipped)} duplicates" if skipped else "")
+-            )
+-
+-            try:
+-                socketio.emit('accounts_updated', self.get_accounts_data())
+-            except:
+-                pass
+-
+-            msg = f"Added {len(added)} channel(s)."
+-            if skipped:
+-                msg += f" Skipped {len(skipped)} duplicate(s)."
+-            return {"success": True, "message": msg, "added": added, "skipped": skipped,
+-                    "total": len(existing)}
+-
+-        except Exception as e:
+-            db.rollback()
+-            return {"success": False, "error": f"Database error: {str(e)}"}
+-        finally:
+-            db.close()
+-
+-    def remove_target_channels(self, phone, channels_to_remove):
+-        """Remove specific target channels from an account"""
+-        if not channels_to_remove:
+-            return {"success": False, "error": "No channels provided!"}
+-
+-        db = self.db_manager.get_session()
+-        try:
+-            account = self._find_account(db, phone)
+-            if not account:
+-                return {"success": False, "error": "Account not found!"}
+-
+-            existing = list(account.target_channels or [])
+-            before_count = len(existing)
+-
+-            new_channels = [ch for ch in existing if ch not in channels_to_remove]
+-            removed_count = before_count - len(new_channels)
+-
+-            if removed_count == 0:
+-                return {"success": False, "error": "None of the specified channels were found!"}
+-
+-            # Assign new list and flag for SQLAlchemy JSON mutation detection
+-            account.target_channels = new_channels
+-            flag_modified(account, 'target_channels')
+-            db.commit()
+-
+-            self.entity_cache.clear()
+-
+-            self.log_message(f"Account {phone}: removed {removed_count} channel(s)")
+-
+-            try:
+-                socketio.emit('accounts_updated', self.get_accounts_data())
+-            except:
+-                pass
+-
+-            return {
+-                "success": True,
+-                "message": f"Removed {removed_count} channel(s).",
+-                "remaining": len(new_channels)
+-            }
+-
+-        except Exception as e:
+-            db.rollback()
+-            return {"success": False, "error": f"Database error: {str(e)}"}
+-        finally:
+-            db.close()
+-
+-    def update_source_channel(self, phone, new_source):
+-        """Update the source (monitoring) channel for an account with verification"""
+-        new_source_str = str(new_source).strip()
+-        try:
+-            int(new_source_str)
+-        except ValueError:
+-            return {"success": False, "error": "Source channel must be a valid numeric ID!"}
+-
+-        db = self.db_manager.get_session()
+-        try:
+-            account = self._find_account(db, phone)
+-            if not account:
+-                return {"success": False, "error": "Account not found in database!"}
+-
+-            account_phone = account.phone
+-            old_source = account.source_channel
+-            account.source_channel = new_source_str
+-            db.commit()
+-
+-            # Clear entity cache since source channel changed
+-            self.entity_cache.clear()
+-
+-            self.log_message(f"Account {account_phone}: source channel updated {old_source} -> {new_source_str}")
+-
+-            # If account is currently connected, dynamically update monitor handler if monitoring is active
+-            client = self.clients.get(account_phone) or self.clients.get(phone)
+-            if client and self.loop and not self.loop.is_closed():
+-                # Verify channel access if client connected
+-                asyncio.run_coroutine_threadsafe(
+-                    self.get_entity_safe(client, new_source_str, account_phone),
+-                    self.loop
+-                )
+-                if self.message_monitoring:
+-                    asyncio.run_coroutine_threadsafe(
+-                        self.setup_single_monitor_handler(account.to_dict(), client),
+-                        self.loop
+-                    )
+-
+-            try:
+-                socketio.emit('accounts_updated', self.get_accounts_data())
+-            except:
+-                pass
+-
+-            return {"success": True, "message": f"Source channel updated to {new_source_str}"}
+-
+-        except Exception as e:
+-            db.rollback()
+-            return {"success": False, "error": f"Database error: {str(e)}"}
+-        finally:
+-            db.close()
+-
+-    def rename_account(self, phone, new_name):
+-        """Rename an account"""
+-        new_name = new_name.strip()
+-        if not new_name:
+-            return {"success": False, "error": "Name cannot be empty!"}
+-
+-        db = self.db_manager.get_session()
+-        try:
+-            account = self._find_account(db, phone)
+-            if not account:
+-                return {"success": False, "error": "Account not found!"}
+-
+-            account.name = new_name
+-            db.commit()
+-
+-            self.log_message(f"Account {phone}: renamed to '{new_name}'")
+-
+-            try:
+-                socketio.emit('accounts_updated', self.get_accounts_data())
+-            except:
+-                pass
+-
+-            return {"success": True, "message": f"Account renamed to '{new_name}'"}
+-
+-        except Exception as e:
+-            db.rollback()
+-            return {"success": False, "error": f"Database error: {str(e)}"}
+-        finally:
+-            db.close()
+     
+     def get_accounts_data(self):
+         db = self.db_manager.get_session()
+         try:
+             accounts = db.query(Account).all()
+             accounts_data = []
+-            status_changed = False
+ 
+             for account in accounts:
+                 status = account.status
+                 if account.phone in self.clients:
+-                    if status != 'Connected':
+-                        status = 'Connected'
+-                        account.status = 'Connected'
+-                        status_changed = True
+-                else:
+-                    # If client not in self.clients but DB says Connected, mark as Disconnected
+-                    if status == 'Connected':
+-                        status = 'Disconnected'
+-                        account.status = 'Disconnected'
+-                        status_changed = True
++                    status = 'Connected'
++                    # Update status in database
++                    account.status = 'Connected'
+ 
+                 accounts_data.append({
+                     'name': account.name,
+                     'phone': account.phone,
+                     'source_channel': account.source_channel,
+-                    'target_channels': account.target_channels or [],
++                    'target_channels': account.target_channels,
+                     'status': status
+                 })
+ 
+-            if status_changed:
+-                try:
+-                    db.commit()
+-                except Exception:
+-                    db.rollback()
++            db.commit()
+ 
+             return {
+                 'accounts': accounts_data,
+@@ -802,10 +499,6 @@
+ 
+         except Exception as e:
+             self.logger.error(f"Error getting accounts data: {e}")
+-            try:
+-                db.rollback()
+-            except:
+-                pass
+             return {
+                 'accounts': [],
+                 'total_accounts': 0,
+@@ -927,19 +620,6 @@
+         
+         self.finish_connection_process(connected_count, failed_count)
+     
+-    def cancel_connection_process(self):
+-        self.connection_in_progress = False
+-        self.connection_paused = False
+-        self.current_connecting_phone = None
+-        self.pending_auth.clear()
+-        self.log_message("Connection process reset/cancelled")
+-        try:
+-            socketio.emit('connection_progress', {'current': 0, 'total': 0, 'status': 'Process cancelled', 'finished': True})
+-            socketio.emit('accounts_updated', self.get_accounts_data())
+-        except:
+-            pass
+-        return {"success": True, "message": "Connection process cancelled"}
+-
+     def finish_connection_process(self, connected_count, failed_count):
+         self.connection_in_progress = False
+         self.connection_paused = False
+@@ -1462,34 +1142,22 @@
+     async def clear_monitoring_handlers(self):
+         for phone, client in self.clients.items():
+             try:
+-                # Properly remove all event handlers from the client
+-                handlers = client.list_event_handlers()
+-                for callback, event in handlers:
+-                    client.remove_event_handler(callback, event)
++                client.list_event_handlers().clear()
+                 self.log_message("Monitor handlers cleared", phone)
+             except Exception as e:
+                 self.log_message(f"Monitor handler clearing error: {str(e)}", phone)
+     
+     def add_scheduled_post(self, post_input, target_datetime, selected_channels):
+-        # Extract message ID if user pasted full Telegram link (e.g. https://t.me/channel/123 or https://t.me/c/12345/678)
+-        post_input_str = str(post_input).strip()
+-        if '/' in post_input_str:
+-            parts = [p for p in post_input_str.split('/') if p]
+-            if parts:
+-                post_input_str = parts[-1]
+-
+-        try:
+-            message_id = int(post_input_str)
++        try:
++            int(post_input)
+         except ValueError:
+-            return {"success": False, "error": "Message ID must be a valid number or link (e.g. 12345)!"}
+-        
+-        post_input = str(message_id)
++            return {"success": False, "error": "Message ID must be a number!"}
+ 
+         if not selected_channels:
+             return {"success": False, "error": "Select at least one channel!"}
+ 
+         utc_plus_2 = timezone(timedelta(hours=2))
+-        current_time = datetime.now(timezone.utc).replace(tzinfo=None)
++        current_time = datetime.now(utc_plus_2)
+         time_diff = (target_datetime - current_time).total_seconds()
+ 
+         if time_diff < -60:
+@@ -1507,8 +1175,8 @@
+             db.add(new_post)
+             db.commit()
+ 
+-            # Convert back to local time for logging
+-            display_time = target_datetime.replace(tzinfo=timezone.utc).astimezone(utc_plus_2)
++            # Convert to local time for logging
++            display_time = target_datetime.astimezone(utc_plus_2) if target_datetime.tzinfo else target_datetime
+             total_channels = sum(len(channels) for channels in selected_channels.values())
+             self.log_message(f"New post scheduled: Message ID {post_input} for {display_time.strftime('%d.%m.%Y %H:%M')} - {total_channels} channels")
+ 
+@@ -1902,317 +1570,6 @@
+             error_type = type(e).__name__
+             raise Exception(f"{error_type}: {str(e)}")
+     
+-    # =========================================================
+-    # QR CODE LOGIN
+-    # =========================================================
+-
+-    def generate_qr_image(self, url):
+-        """Generate QR code image from URL and return as base64 PNG string"""
+-        qr = qrcode.QRCode(
+-            version=1,
+-            error_correction=qrcode.constants.ERROR_CORRECT_L,
+-            box_size=8,
+-            border=4,
+-        )
+-        qr.add_data(url)
+-        qr.make(fit=True)
+-        img = qr.make_image(fill_color="black", back_color="white")
+-        buffer = io.BytesIO()
+-        img.save(buffer, format='PNG')
+-        buffer.seek(0)
+-        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+-
+-    async def start_qr_login_async(self, session_id, api_id, api_hash, name, source_channel, target_channels):
+-        """Start QR login process: create client, generate QR, wait for scan"""
+-        try:
+-            self.log_message(f"Starting QR login session {session_id[:8]}...")
+-
+-            client = TelegramClient(
+-                StringSession(),
+-                int(api_id),
+-                api_hash,
+-                timeout=20,
+-                retry_delay=1,
+-                auto_reconnect=True,
+-                connection_retries=3
+-            )
+-            await asyncio.wait_for(client.connect(), timeout=15.0)
+-
+-            qr_login = await client.qr_login()
+-
+-            self.pending_qr_sessions[session_id] = {
+-                'client': client,
+-                'qr_login': qr_login,
+-                'api_id': api_id,
+-                'api_hash': api_hash,
+-                'name': name,
+-                'source_channel': source_channel,
+-                'target_channels': target_channels,
+-                'step': 'qr',
+-                'task': None,
+-            }
+-
+-            # Generate and send QR image to frontend
+-            qr_image = self.generate_qr_image(qr_login.url)
+-            try:
+-                socketio.emit('qr_code_generated', {
+-                    'session_id': session_id,
+-                    'qr_image': qr_image,
+-                })
+-            except:
+-                pass
+-
+-            self.log_message(f"QR code generated for session {session_id[:8]}")
+-
+-            # Start background task to wait for scan
+-            task = asyncio.create_task(self.wait_for_qr_scan(session_id))
+-            if session_id in self.pending_qr_sessions:
+-                self.pending_qr_sessions[session_id]['task'] = task
+-
+-        except asyncio.TimeoutError:
+-            self.log_message(f"QR login timeout connecting to Telegram for session {session_id[:8]}")
+-            try:
+-                socketio.emit('qr_login_error', {
+-                    'session_id': session_id,
+-                    'error': 'Connection timeout. Check your internet connection.'
+-                })
+-            except:
+-                pass
+-        except Exception as e:
+-            self.log_message(f"QR login start error: {str(e)}")
+-            try:
+-                socketio.emit('qr_login_error', {
+-                    'session_id': session_id,
+-                    'error': f'Failed to start QR login: {str(e)}'
+-                })
+-            except:
+-                pass
+-
+-    async def wait_for_qr_scan(self, session_id):
+-        """Wait for QR scan in a loop, recreating QR every 30s if expired"""
+-        max_attempts = 12  # 12 * 30s = 6 minutes maximum wait
+-
+-        for attempt in range(max_attempts):
+-            if session_id not in self.pending_qr_sessions:
+-                return  # Session was cancelled
+-
+-            session_data = self.pending_qr_sessions[session_id]
+-            qr_login = session_data['qr_login']
+-
+-            try:
+-                # Wait up to 30 seconds for user to scan
+-                await qr_login.wait(30)
+-
+-                # ✅ Scan successful!
+-                if session_id in self.pending_qr_sessions:
+-                    await self.finalize_qr_login(session_id)
+-                return
+-
+-            except asyncio.TimeoutError:
+-                # QR expired — recreate it
+-                if session_id not in self.pending_qr_sessions:
+-                    return
+-                try:
+-                    await qr_login.recreate()
+-                    qr_image = self.generate_qr_image(qr_login.url)
+-                    self.log_message(f"QR code refreshed (attempt {attempt + 2}) for session {session_id[:8]}")
+-                    try:
+-                        socketio.emit('qr_code_updated', {
+-                            'session_id': session_id,
+-                            'qr_image': qr_image,
+-                        })
+-                    except:
+-                        pass
+-                except asyncio.CancelledError:
+-                    return
+-                except Exception as e:
+-                    self.log_message(f"QR recreate error: {str(e)}")
+-                    try:
+-                        socketio.emit('qr_login_error', {
+-                            'session_id': session_id,
+-                            'error': f'QR code expired and could not be refreshed: {str(e)}'
+-                        })
+-                    except:
+-                        pass
+-                    if session_id in self.pending_qr_sessions:
+-                        del self.pending_qr_sessions[session_id]
+-                    return
+-
+-            except asyncio.CancelledError:
+-                # Task was cancelled (user closed modal)
+-                self.log_message(f"QR login task cancelled for session {session_id[:8]}")
+-                return
+-
+-            except SessionPasswordNeededError:
+-                # 2FA is required after QR scan
+-                if session_id in self.pending_qr_sessions:
+-                    self.pending_qr_sessions[session_id]['step'] = '2fa'
+-                    self.log_message(f"QR login: 2FA required for session {session_id[:8]}")
+-                    try:
+-                        socketio.emit('qr_2fa_required', {'session_id': session_id})
+-                    except:
+-                        pass
+-                return  # Pause here — wait for password via process_qr_2fa
+-
+-            except Exception as e:
+-                error_msg = str(e)
+-                self.log_message(f"QR scan error: {error_msg}")
+-                try:
+-                    socketio.emit('qr_login_error', {
+-                        'session_id': session_id,
+-                        'error': f'QR error: {error_msg}'
+-                    })
+-                except:
+-                    pass
+-                if session_id in self.pending_qr_sessions:
+-                    del self.pending_qr_sessions[session_id]
+-                return
+-
+-        # Max attempts reached — timed out
+-        self.log_message(f"QR login timed out (6 min) for session {session_id[:8]}")
+-        try:
+-            socketio.emit('qr_login_error', {
+-                'session_id': session_id,
+-                'error': 'QR code login timed out (6 minutes). Please try again.'
+-            })
+-        except:
+-            pass
+-        if session_id in self.pending_qr_sessions:
+-            del self.pending_qr_sessions[session_id]
+-
+-    async def finalize_qr_login(self, session_id):
+-        """Save account to DB, connect client, emit success event"""
+-        if session_id not in self.pending_qr_sessions:
+-            return
+-
+-        session_data = self.pending_qr_sessions[session_id]
+-        client = session_data['client']
+-
+-        try:
+-            me = await client.get_me()
+-            phone = f"+{me.phone}" if me.phone else f"qr_{me.id}"
+-            display_name = session_data['name'] if session_data['name'] else (me.first_name or phone)
+-
+-            # Save to database
+-            db = self.db_manager.get_session()
+-            try:
+-                existing = db.query(Account).filter_by(phone=phone).first()
+-                if existing:
+-                    # Update existing account session
+-                    existing.session_string = client.session.save()
+-                    existing.status = 'Connected'
+-                    existing.name = display_name
+-                    db.commit()
+-                    self.log_message(f"QR login: Updated existing account {phone}")
+-                else:
+-                    # Create new account
+-                    session_file = f"session_qr_{me.id}"
+-                    new_account = Account(
+-                        name=display_name,
+-                        api_id=session_data['api_id'],
+-                        api_hash=session_data['api_hash'],
+-                        phone=phone,
+-                        source_channel=session_data['source_channel'],
+-                        target_channels=session_data['target_channels'],
+-                        status='Connected',
+-                        session_file=session_file,
+-                        session_string=client.session.save(),
+-                    )
+-                    db.add(new_account)
+-                    db.commit()
+-                    self.log_message(f"QR login: New account saved {display_name} ({phone})")
+-
+-                self.clients[phone] = client
+-
+-            except Exception as e:
+-                db.rollback()
+-                raise e
+-            finally:
+-                db.close()
+-
+-            # Clean up session
+-            if session_id in self.pending_qr_sessions:
+-                del self.pending_qr_sessions[session_id]
+-
+-            # Emit success
+-            self.log_message(f"[OK] QR login successful: {display_name} ({phone})")
+-            try:
+-                socketio.emit('qr_login_success', {
+-                    'session_id': session_id,
+-                    'phone': phone,
+-                    'name': display_name,
+-                })
+-                socketio.emit('accounts_updated', self.get_accounts_data())
+-            except:
+-                pass
+-
+-        except Exception as e:
+-            self.log_message(f"QR finalize error: {str(e)}")
+-            try:
+-                socketio.emit('qr_login_error', {
+-                    'session_id': session_id,
+-                    'error': f'Failed to save account: {str(e)}'
+-                })
+-            except:
+-                pass
+-            if session_id in self.pending_qr_sessions:
+-                del self.pending_qr_sessions[session_id]
+-
+-    async def process_qr_2fa(self, session_id, password):
+-        """Handle 2FA password after QR scan"""
+-        if session_id not in self.pending_qr_sessions:
+-            try:
+-                socketio.emit('qr_login_error', {
+-                    'session_id': session_id,
+-                    'error': 'Session expired. Please start QR login again.'
+-                })
+-            except:
+-                pass
+-            return
+-
+-        session_data = self.pending_qr_sessions[session_id]
+-        client = session_data['client']
+-
+-        try:
+-            await client.sign_in(password=password)
+-            self.log_message(f"QR login: 2FA successful for session {session_id[:8]}")
+-            await self.finalize_qr_login(session_id)
+-        except Exception as e:
+-            error_msg = str(e)
+-            self.log_message(f"QR 2FA error: {error_msg}")
+-            try:
+-                socketio.emit('qr_2fa_error', {
+-                    'session_id': session_id,
+-                    'error': f'Incorrect 2FA password! Please try again.'
+-                })
+-            except:
+-                pass
+-
+-    def cancel_qr_login_session(self, session_id):
+-        """Cancel QR login session, disconnect client, cancel async task"""
+-        if session_id and session_id in self.pending_qr_sessions:
+-            session_data = self.pending_qr_sessions[session_id]
+-
+-            # Cancel the async wait task
+-            task = session_data.get('task')
+-            if task and not task.done() and self.loop:
+-                self.loop.call_soon_threadsafe(task.cancel)
+-
+-            # Disconnect client
+-            client = session_data.get('client')
+-            if client and self.loop:
+-                try:
+-                    asyncio.run_coroutine_threadsafe(client.disconnect(), self.loop)
+-                except:
+-                    pass
+-
+-            del self.pending_qr_sessions[session_id]
+-            self.log_message(f"QR login cancelled: session {session_id[:8]}")
+-
+-    # =========================================================
+-    # DISCONNECT ALL
+-    # =========================================================
+-
+     def disconnect_all(self):
+         self.running = False
+         self.message_monitoring = False
+@@ -2249,19 +1606,6 @@
+         self.clients.clear()
+         self.pending_auth.clear()
+         self.entity_cache.clear()
+-
+-        # Update all account statuses to 'Disconnected' in database
+-        db = self.db_manager.get_session()
+-        try:
+-            accounts = db.query(Account).filter_by(status='Connected').all()
+-            for account in accounts:
+-                account.status = 'Disconnected'
+-            db.commit()
+-        except Exception as e:
+-            db.rollback()
+-            self.logger.error(f"Error updating disconnect status: {e}")
+-        finally:
+-            db.close()
+         
+         try:
+             socketio.emit('accounts_updated', self.get_accounts_data())
+@@ -2364,41 +1708,6 @@
+     result = forwarder.remove_account(phone)
+     return jsonify(result)
+ 
+-# --- Account Channel Management Endpoints ---
+-
+-@app.route('/api/accounts/<phone>/channels', methods=['GET'])
+-@login_required
+-def get_account_info(phone):
+-    return jsonify(forwarder.get_account_info(phone))
+-
+-@app.route('/api/accounts/<phone>/channels/add', methods=['POST'])
+-@login_required
+-def add_account_channels(phone):
+-    data = request.json
+-    new_channels = data.get('channels', [])
+-    return jsonify(forwarder.add_target_channels(phone, new_channels))
+-
+-@app.route('/api/accounts/<phone>/channels/remove', methods=['POST'])
+-@login_required
+-def remove_account_channels(phone):
+-    data = request.json
+-    channels_to_remove = data.get('channels', [])
+-    return jsonify(forwarder.remove_target_channels(phone, channels_to_remove))
+-
+-@app.route('/api/accounts/<phone>/source', methods=['POST'])
+-@login_required
+-def update_account_source(phone):
+-    data = request.json
+-    new_source = data.get('source_channel')
+-    return jsonify(forwarder.update_source_channel(phone, new_source))
+-
+-@app.route('/api/accounts/<phone>/rename', methods=['POST'])
+-@login_required
+-def rename_account(phone):
+-    data = request.json
+-    new_name = data.get('name')
+-    return jsonify(forwarder.rename_account(phone, new_name))
+-
+ @app.route('/api/channels/remove', methods=['POST'])
+ @login_required
+ def remove_channels():
+@@ -2413,12 +1722,6 @@
+     result = forwarder.connect_all_accounts()
+     return jsonify(result)
+ 
+-@app.route('/api/connect/cancel', methods=['POST'])
+-@login_required
+-def cancel_connect_accounts():
+-    result = forwarder.cancel_connection_process()
+-    return jsonify(result)
+-
+ @app.route('/api/disconnect', methods=['POST'])
+ @login_required
+ def disconnect_accounts():
+@@ -2468,15 +1771,14 @@
+ 
+     try:
+         utc_plus_2 = timezone(timedelta(hours=2))
+-        local_datetime = datetime.strptime(data['datetime'], '%Y-%m-%dT%H:%M')
+-        local_datetime = local_datetime.replace(tzinfo=utc_plus_2)
+-        target_datetime_utc = local_datetime.astimezone(timezone.utc).replace(tzinfo=None)
++        target_datetime = datetime.strptime(data['datetime'], '%Y-%m-%dT%H:%M')
++        target_datetime = target_datetime.replace(tzinfo=utc_plus_2)
+     except:
+         return jsonify({"success": False, "error": "Invalid datetime format"})
+     
+     result = forwarder.add_scheduled_post(
+         data['post'],
+-        target_datetime_utc,
++        target_datetime,
+         data['channels']
+     )
+     return jsonify(result)
+@@ -2517,93 +1819,7 @@
+ 
+ @app.route('/health')
+ def health():
+-    return {"status": "healthy", "accounts": len(forwarder.get_accounts_data().get('accounts', [])), "connected": len(forwarder.clients)}
+-
+-# =====================================================
+-# QR CODE LOGIN ENDPOINTS
+-# =====================================================
+-
+-@app.route('/api/qr/start', methods=['POST'])
+-@login_required
+-def start_qr_login():
+-    """Start a QR code login session"""
+-    data = request.json
+-    session_id = str(uuid.uuid4())
+-
+-    api_id = data.get('api_id', '').strip()
+-    api_hash = data.get('api_hash', '').strip()
+-    name = data.get('name', '').strip()
+-    source_channel = data.get('source_channel', '').strip()
+-    target_channels = data.get('target_channels', [])
+-
+-    if not api_id or not api_hash:
+-        return jsonify({'success': False, 'error': 'API ID and API Hash are required!'})
+-
+-    if not source_channel:
+-        return jsonify({'success': False, 'error': 'Source Channel ID is required!'})
+-
+-    if not target_channels:
+-        return jsonify({'success': False, 'error': 'Add at least one target channel!'})
+-
+-    try:
+-        int(api_id)
+-    except ValueError:
+-        return jsonify({'success': False, 'error': 'API ID must be a number!'})
+-
+-    try:
+-        int(source_channel)
+-    except ValueError:
+-        return jsonify({'success': False, 'error': 'Source Channel ID must be a number!'})
+-
+-    for ch in target_channels:
+-        try:
+-            int(ch)
+-        except ValueError:
+-            return jsonify({'success': False, 'error': f"Target channel '{ch}' must be a number!"})
+-
+-    if forwarder.loop and not forwarder.loop.is_closed():
+-        asyncio.run_coroutine_threadsafe(
+-            forwarder.start_qr_login_async(session_id, api_id, api_hash, name, source_channel, target_channels),
+-            forwarder.loop
+-        )
+-        return jsonify({'success': True, 'session_id': session_id})
+-
+-    return jsonify({'success': False, 'error': 'Async loop not available!'})
+-
+-@app.route('/api/qr/2fa', methods=['POST'])
+-@login_required
+-def submit_qr_2fa():
+-    """Submit 2FA password for QR login session"""
+-    data = request.json
+-    session_id = data.get('session_id', '')
+-    password = data.get('password', '')
+-
+-    if not session_id:
+-        return jsonify({'success': False, 'error': 'Session ID missing!'})
+-
+-    if session_id not in forwarder.pending_qr_sessions:
+-        return jsonify({'success': False, 'error': 'QR session not found or expired!'})
+-
+-    if not password:
+-        return jsonify({'success': False, 'error': 'Password cannot be empty!'})
+-
+-    if forwarder.loop and not forwarder.loop.is_closed():
+-        asyncio.run_coroutine_threadsafe(
+-            forwarder.process_qr_2fa(session_id, password),
+-            forwarder.loop
+-        )
+-        return jsonify({'success': True, 'message': 'Password submitted'})
+-
+-    return jsonify({'success': False, 'error': 'Async loop not available!'})
+-
+-@app.route('/api/qr/cancel', methods=['POST'])
+-@login_required
+-def cancel_qr_login():
+-    """Cancel a QR login session"""
+-    data = request.json
+-    session_id = data.get('session_id', '')
+-    forwarder.cancel_qr_login_session(session_id)
+-    return jsonify({'success': True, 'message': 'QR login cancelled'})
++    return {"status": "healthy", "accounts": len(forwarder.accounts), "connected": len(forwarder.clients)}
+ 
+ @socketio.on('connect')
+ def handle_connect():
+@@ -2640,11 +1856,11 @@
+     auth_test = AuthManager()
+     test_creds = auth_test.load_credentials()
+     if test_creds:
+-        print(f"[OK] Credentials loaded successfully")
++        print(f"✓ Credentials loaded successfully")
+         print(f"  Username: {test_creds['login']}")
+         print(f"  Password: {test_creds['password']}")
+     else:
+-        print("[FAIL] Failed to load credentials")
++        print("✗ Failed to load credentials")
+     
+     print("="*50)
+     
+@@ -2652,6 +1868,8 @@
+         app, 
+         host='0.0.0.0', 
+         port=port, 
+-        debug=False,
+-        allow_unsafe_werkzeug=True
++        debug=True,
++        allow_unsafe_werkzeug=True,
++        logger=False,
++        engineio_logger=False
+     )

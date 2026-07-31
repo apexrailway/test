@@ -1489,7 +1489,7 @@ class WebTelegramForwarder:
             return {"success": False, "error": "Select at least one channel!"}
 
         utc_plus_2 = timezone(timedelta(hours=2))
-        current_time = datetime.now(utc_plus_2)
+        current_time = datetime.now(timezone.utc).replace(tzinfo=None)
         time_diff = (target_datetime - current_time).total_seconds()
 
         if time_diff < -60:
@@ -1507,8 +1507,8 @@ class WebTelegramForwarder:
             db.add(new_post)
             db.commit()
 
-            # Convert to local time for logging
-            display_time = target_datetime.astimezone(utc_plus_2) if target_datetime.tzinfo else target_datetime
+            # Convert back to local time for logging
+            display_time = target_datetime.replace(tzinfo=timezone.utc).astimezone(utc_plus_2)
             total_channels = sum(len(channels) for channels in selected_channels.values())
             self.log_message(f"New post scheduled: Message ID {post_input} for {display_time.strftime('%d.%m.%Y %H:%M')} - {total_channels} channels")
 
@@ -2468,14 +2468,15 @@ def add_scheduled_post():
 
     try:
         utc_plus_2 = timezone(timedelta(hours=2))
-        target_datetime = datetime.strptime(data['datetime'], '%Y-%m-%dT%H:%M')
-        target_datetime = target_datetime.replace(tzinfo=utc_plus_2)
+        local_datetime = datetime.strptime(data['datetime'], '%Y-%m-%dT%H:%M')
+        local_datetime = local_datetime.replace(tzinfo=utc_plus_2)
+        target_datetime_utc = local_datetime.astimezone(timezone.utc).replace(tzinfo=None)
     except:
         return jsonify({"success": False, "error": "Invalid datetime format"})
     
     result = forwarder.add_scheduled_post(
         data['post'],
-        target_datetime,
+        target_datetime_utc,
         data['channels']
     )
     return jsonify(result)
