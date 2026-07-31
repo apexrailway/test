@@ -1016,31 +1016,27 @@ class WebTelegramForwarder:
             await asyncio.wait_for(client.connect(), timeout=15.0)
 
             if not await client.is_user_authorized():
-                if session_string:
-                    self.log_message(f"⚠ Saved session is invalid or expired - requesting new authorization code", phone)
-                else:
-                    self.log_message(f"Authorization required - sending code", phone)
+                self.log_message(f"⚠ Saved session is invalid or expired - Please reconnect via QR Code", phone)
 
-                account['status'] = 'Waiting for code...'
-
-                await client.send_code_request(phone)
-
-                self.pending_auth[phone] = {
-                    'client': client,
-                    'account': account,
-                    'step': 'code'
-                }
+                account['status'] = 'Auth Expired'
+                
+                db = self.db_manager.get_session()
+                try:
+                    db_acc = db.query(Account).filter_by(phone=phone).first()
+                    if db_acc:
+                        db_acc.status = 'Auth Expired'
+                        db.commit()
+                except:
+                    pass
+                finally:
+                    db.close()
 
                 try:
-                    socketio.emit('auth_required', {
-                        'phone': phone,
-                        'step': 'code'
-                    })
                     socketio.emit('accounts_updated', self.get_accounts_data())
                 except:
                     pass
 
-                return 'auth_required'
+                return 'auth_expired'
 
             me = await client.get_me()
             self.clients[phone] = client
@@ -1118,29 +1114,26 @@ class WebTelegramForwarder:
 
                         return 'success'
                     else:
-                        account['status'] = 'Auth required after retry'
-
-                        if session_string:
-                            self.log_message(f"⚠ Saved session invalid on retry - requesting code", phone)
-                        else:
-                            self.log_message(f"Authorization required after retry", phone)
-
-                        await retry_client.send_code_request(phone)
-
-                        self.pending_auth[phone] = {
-                            'client': retry_client,
-                            'account': account,
-                            'step': 'code'
-                        }
-
+                        account['status'] = 'Auth Expired'
+                        self.log_message(f"⚠ Saved session invalid on retry - Please reconnect via QR Code", phone)
+                        
+                        db = self.db_manager.get_session()
                         try:
-                            socketio.emit('auth_required', {
-                                'phone': phone,
-                                'step': 'code'
-                            })
+                            db_acc = db.query(Account).filter_by(phone=phone).first()
+                            if db_acc:
+                                db_acc.status = 'Auth Expired'
+                                db.commit()
                         except:
                             pass
-                        return 'auth_required'
+                        finally:
+                            db.close()
+                            
+                        try:
+                            socketio.emit('accounts_updated', self.get_accounts_data())
+                        except:
+                            pass
+                            
+                        return 'auth_expired'
                         
                 except Exception as retry_error:
                     self.log_message(f"Retry failed: {str(retry_error)}", phone)
@@ -2430,19 +2423,6 @@ def disconnect_accounts():
 def get_auth_status():
     return jsonify(forwarder.get_auth_status())
 
-@app.route('/api/auth/code', methods=['POST'])
-@login_required
-def submit_auth_code():
-    data = request.json
-    result = forwarder.submit_auth_code(data['phone'], data['code'])
-    return jsonify(result)
-
-@app.route('/api/auth/password', methods=['POST'])
-@login_required
-def submit_auth_password():
-    data = request.json
-    result = forwarder.submit_auth_password(data['phone'], data['password'])
-    return jsonify(result)
 
 @app.route('/api/monitor/start', methods=['POST'])
 @login_required
@@ -2530,11 +2510,32 @@ def start_qr_login():
     data = request.json
     session_id = str(uuid.uuid4())
 
-    api_id = data.get('api_id', '').strip()
-    api_hash = data.get('api_hash', '').strip()
-    name = data.get('name', '').strip()
-    source_channel = data.get('source_channel', '').strip()
+    phone = data.get('phone')
+    api_id = data.get('api_id', '')
+    if isinstance(api_id, str): api_id = api_id.strip()
+    api_hash = data.get('api_hash', '')
+    if isinstance(api_hash, str): api_hash = api_hash.strip()
+    name = data.get('name', 'Account')
+    if isinstance(name, str): name = name.strip()
+    source_channel = data.get('source_channel', '')
+    if isinstance(source_channel, str): source_channel = source_channel.strip()
     target_channels = data.get('target_channels', [])
+
+    # If phone is provided, fetch credentials from DB for Re-auth
+    if phone:
+        db = forwarder.db_manager.get_session()
+        try:
+            acc = db.query(Account).filter_by(phone=phone).first()
+            if acc:
+                name = acc.name
+                api_id = acc.api_id
+                api_hash = acc.api_hash
+                source_channel = acc.source_channel
+                target_channels = acc.target_channels
+        except:
+            pass
+        finally:
+            db.close()
 
     if not api_id or not api_hash:
         return jsonify({'success': False, 'error': 'API ID and API Hash are required!'})
