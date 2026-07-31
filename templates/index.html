@@ -2474,8 +2474,14 @@
                 if (data.success === false) {
                     showNotification('Error starting QR Reauth: ' + data.error, 'error');
                 } else {
+                    currentQrSessionId = data.session_id;
                     // Switch to step 2 immediately
                     showQrStep(2);
+                    // Reset spinner
+                    const img = document.getElementById('qrImage');
+                    if (img) { img.classList.remove('loaded'); }
+                    const spinner = document.getElementById('qrSpinner');
+                    if (spinner) spinner.classList.remove('hidden');
                 }
             })
             .catch(err => {
