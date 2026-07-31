@@ -2181,12 +2181,10 @@ class WebTelegramForwarder:
             error_msg = str(e)
             self.log_message(f"QR 2FA error: {error_msg}")
             try:
-                socketio.emit('qr_login_error', {
+                socketio.emit('qr_2fa_error', {
                     'session_id': session_id,
-                    'error': f'2FA password incorrect: {error_msg}'
+                    'error': f'Incorrect 2FA password! Please try again.'
                 })
-                # Re-emit 2FA required so user can try again
-                socketio.emit('qr_2fa_required', {'session_id': session_id})
             except:
                 pass
 
